@@ -4,12 +4,16 @@ import sys # for command line args
 
 codefrom = ''
 frommemaddr = 0
-branchsearch = False
+branchsearch = False # branch search mode
+stringpointers = False # string pointer search mode
+ustopal = False # US to pal porting mode for Evan
 funcstart = -1
 funcend = -1
 funcline = -1
 funclen = -1
 threshold = -1
+quiet = False
+silent = False
 if len(sys.argv) > 1:
     for arg in sys.argv[1:]:
         if arg == '--codefrom:us':
@@ -30,8 +34,17 @@ if len(sys.argv) > 1:
             frommemaddr = int(arg[10:], 16)
         elif arg.startswith('--threshold:'): # input a hex value to be the maximum distance from the found function
             threshold = int(arg[12:], 16)
+        elif arg == '--quiet':
+            quiet = True
+        elif arg == '--silent':
+            silent = True
+        elif arg == '--stringpointers': # I should prevent multiple modes from being passed but meh
+            stringpointers = True
+        elif arg == '--ustopal':
+            ustopal = True
 
-if codefrom == '': # if you didn't set it
+
+if codefrom == '' and not ustopal: # if you didn't set it
     codefrom = input('which dol is your code from? (us or kor):')
 
 if codefrom == 'us':
@@ -62,7 +75,8 @@ def findsymbol(address, map):
                 if funclen > -1:
                     if funclen != int(symbollength / 4): # if the specified funclen is not the length of the function
                         return None # stop and return nothing
-                print(f'symbol is {int(symbollength / 4)} lines long, this is the {int(intofunction / 4) + 1}th line of the function') # how to output this? maybe just output the whole linesplit array, or a tuple with just the length and name? Also, we need the offset into the symbol map?
+                if not quiet:
+                    print(f'symbol is {int(symbollength / 4)} lines long, this is the {int(intofunction / 4) + 1}th line of the function') # how to output this? maybe just output the whole linesplit array, or a tuple with just the length and name? Also, we need the offset into the symbol map?
                 return line[39:-1] #.join(linesplit[5:]) to get just the symbol; symbol name will always start at the 39th character
     return 'Symbol not found'
 
@@ -123,10 +137,14 @@ with open('RMGK01.map') as map:
                     branchdest = curdoladdr + branchdist
                     if startdoladdr < branchdest and branchdest < enddoladdr:
                         curmemaddr = 0x80004AC0 + curdoladdr
-                        if codefrom == 'kor':
-                            print(f'B-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)! {findsymbol(curmemaddr, map)}')
-                        else:
-                            print(f'B-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)!')
+                        if not silent:
+                            if codefrom == 'kor':
+                                print(f'B-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)! {findsymbol(curmemaddr, map)}')
+                            else: # if code is from US we have no symbol
+                                print(f'B-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)!')
+                        else: # minimal "silent" text
+                            #print(f'{hex(curmemaddr)[2:]}: {findsymbol(curmemaddr, map)}')
+                            print(f'{findsymbol(curmemaddr, map)}')
                 elif opcode == 18: # branch i-form
                     branchdist = (0x03fffffc & inst)
                     if branchdist > 0x01ffffff: # should be negative!
@@ -135,14 +153,70 @@ with open('RMGK01.map') as map:
                     branchdest = curdoladdr + branchdist
                     if startdoladdr < branchdest and branchdest < enddoladdr:
                         curmemaddr = 0x80004AC0 + curdoladdr
-                        if codefrom == 'kor':
-                            print(f'I-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)! {findsymbol(curmemaddr, map)}')
-                        else:
-                            print(f'I-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)!')
+                        if not silent:
+                            if codefrom == 'kor':
+                                print(f'I-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)! {findsymbol(curmemaddr, map)}')
+                            else:
+                                print(f'I-form branch at {hex(curdoladdr)} in {fromdolpath} ({hex(curmemaddr)} in memory)!')
+                        else: # minimal "silent" text
+                            #print(f'{hex(curmemaddr)[2:]}: {findsymbol(curmemaddr, map)}')
+                            print(f'{findsymbol(curmemaddr, map)}')
                 curdoladdr += 4 # finally, update the current dol address (remember, this is a loop through every code line)
-            
+    elif ustopal: # generic matching not using the symbol map basically
+        if frommemaddr == 0: # only get if not passed as a parameter
+            frommemaddr = int(input(f"us memory address of code line:"), 16) # 801c79f8 testing
+        print(f'entered address {hex(frommemaddr)}')
+        fromdoladdr = frommemaddr - 0x80004AC0
 
-    else: # if not branchsearch
+        fromdolpath = 'RMGE01.dol'
+        finddolpath = 'RMGP01.dol' # dol path to find code in
+
+        with open(fromdolpath,'rb') as fromdol: #fromdol always us
+            fromdol.seek(fromdoladdr)
+            index = 0
+            instfindarr = [0] * 5 # init an array with 5 entries. Doesn't seem much faster than a list.
+            while index < 5:
+                instfindarr[index] = struct.unpack('>I', fromdol.read(4))[0]
+                index += 1
+            # instfind[1] = struct.unpack('>I', fromdol.read(4))[0] # (don't) throw away next instruction
+            print(f'instruction bytes there are {hex(instfindarr[0])}')
+        
+        with open(finddolpath,'rb') as finddol: #finddol always pal
+            finddoladdr = 0x100 # first code starts at 0x100
+            broken = 0 # var to break the while loop
+            instfind = 0 # let's not define this var every time
+            while broken != 1:
+                match = 0 # number of lines matched... could make this a parameter and use a loop!
+                finddol.seek(finddoladdr) # reset so we check everything (including the "additional lines")
+                finddoladdr += 4
+                # index = 0
+                # while index < 5: # while loop almost seemed slower, I don't know why...
+                for instfind in instfindarr:
+                    #instfind = instfindarr[index] remenants of using a while loop
+                    try:
+                        inst = struct.unpack('>I', finddol.read(4))[0]
+                    except:
+                        broken = 1
+                        break # reading error (end of file), break
+                    if inst == instfind:
+                        match += 1
+                    #index += 1 # while loop remenant
+                
+                if (match > 2):
+                    findmemaddr = finddoladdr - 4 + 0x80004AC0
+                    if not silent:
+                        print(f'match at {hex(finddoladdr - 4)} in {finddolpath} ({hex(findmemaddr)} in memory)!')
+                    else:
+                        print(f'{hex(findmemaddr)}')
+                    if not quiet:
+                        if findmemaddr > frommemaddr: # if pal > us
+                            print(f'us address {hex(findmemaddr - frommemaddr)} greater than pal')
+                        else:
+                            print(f'us address {hex(frommemaddr - findmemaddr)} less than kor')
+       
+        
+
+    else: # if not branchsearch, ustopal, nor stringpointers
         if frommemaddr == 0: # only get if not passed as a parameter
             frommemaddr = int(input(f"{codefrom} memory address of code line:"), 16) # 801c79f8 testing
         print(f'entered address {hex(frommemaddr)}')
@@ -208,15 +282,23 @@ with open('RMGK01.map') as map:
                         else:
                             symbol = findsymbol(findmemaddr, map)
                         if symbol != None: # if it returns none, this symbol is to be ignored
-                            print(f'match at {hex(finddoladdr - 4)} in {finddolpath} ({hex(findmemaddr)} in memory)! {symbol}')
-                            if frommemaddr > findmemaddr: # if us > kor
-                                print(f'us address {hex(frommemaddr - findmemaddr)} greater than kor')
+                            if not silent:
+                                print(f'match at {hex(finddoladdr - 4)} in {finddolpath} ({hex(findmemaddr)} in memory)! {symbol}')
                             else:
-                                print(f'us address {hex(findmemaddr - frommemaddr)} less than kor')
+                                print(f'{hex(findmemaddr)}: {symbol}')
+                            if not quiet:
+                                if frommemaddr > findmemaddr: # if us > kor
+                                    print(f'us address {hex(frommemaddr - findmemaddr)} greater than kor')
+                                else:
+                                    print(f'us address {hex(findmemaddr - frommemaddr)} less than kor')
                     else:
-                        print(f'match at {hex(finddoladdr - 4)} in {finddolpath} ({hex(findmemaddr)} in memory)!')
-                        if findmemaddr > frommemaddr: # if us > kor
-                            print(f'us address {hex(findmemaddr - frommemaddr)} greater than kor')
+                        if not silent:
+                            print(f'match at {hex(finddoladdr - 4)} in {finddolpath} ({hex(findmemaddr)} in memory)!')
                         else:
-                            print(f'us address {hex(frommemaddr - findmemaddr)} less than kor')
+                            print(f'{hex(findmemaddr)}')
+                        if not quiet:
+                            if findmemaddr > frommemaddr: # if us > kor
+                                print(f'us address {hex(findmemaddr - frommemaddr)} greater than kor')
+                            else:
+                                print(f'us address {hex(frommemaddr - findmemaddr)} less than kor')
         
